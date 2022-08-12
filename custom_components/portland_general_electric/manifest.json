@@ -1,0 +1,11 @@
+{
+  "codeowners": ["@ejpenney"],
+  "config_flow": false,
+  "dependencies": [],
+  "documentation": "https://github.com/ejpenney/ha-portlandgeneral",
+  "domain": "portland_general_electric",
+  "iot_class": "cloud_polling",
+  "name": "HA Portland General Electric",
+  "requirements": ["portlandgeneral-api>=1.1.0"],
+  "version": "0.0.1"
+}
