@@ -8,8 +8,6 @@ import json
 from datetime import date, datetime
 from dateutil.relativedelta import relativedelta
 
-from .const import ATTR_ACCOUNT_NUMBER, ATTR_RAW_DATA
-
 from homeassistant.components.sensor import (
     PLATFORM_SCHEMA,
     SensorDeviceClass,
@@ -29,6 +27,8 @@ from homeassistant.helpers.typing import (
     DiscoveryInfoType,
     HomeAssistantType,
 )
+
+from .const import ATTR_ACCOUNT_NUMBER, ATTR_RAW_DATA
 
 _LOGGER = logging.getLogger(__name__)
 # Time between updating data from PGE
@@ -50,9 +50,11 @@ async def async_setup_platform(
     hass: HomeAssistantType,
     config: ConfigType,
     async_add_entities: Callable,
-    discovery_info: Optional[DiscoveryInfoType] = None,
+    _: Optional[DiscoveryInfoType] = None,
 ) -> None:
     """Set up the sensor platform."""
+    # TODO: Another sensor for cost rate
+
     sensors = [
         DailyUsageSensor(
             username=config[CONF_USERNAME],
@@ -68,7 +70,7 @@ async def async_setup_platform(
     async_add_entities(sensors, update_before_add=True)
 
 
-class PGEUsageSensor(RestoreSensor, SensorEntity):
+class PGEUsageSensor(RestoreSensor):
     """Representation of a PGE sensor."""
 
     _attr_device_class = SensorDeviceClass.ENERGY
@@ -78,6 +80,7 @@ class PGEUsageSensor(RestoreSensor, SensorEntity):
     _available = True
     _name = None
     _unique_id = None
+    _attr_extra_state_attributes = {}
 
     def __init__(
         self,
@@ -86,11 +89,10 @@ class PGEUsageSensor(RestoreSensor, SensorEntity):
         password: str,
     ):
         super().__init__()
-        self.async_get_last_sensor_data()
-
+        
         log_level = logging.getLevelName(_LOGGER.getEffectiveLevel())
         verbose = log_level == "DEBUG"
-        _LOGGER.debug(f"log_level={log_level} and verbose={verbose}")
+        _LOGGER.debug("log_level=%s and verbose=%s", log_level, verbose)
 
         self.opower_client = OPowerApi(verbose=verbose)
         self.client = PortlandGeneralApi(verbose=verbose)
@@ -98,15 +100,7 @@ class PGEUsageSensor(RestoreSensor, SensorEntity):
         self.username = username
         self.password = password
         self.uuid = None
-
-        # if not hasattr(self, "_attr_last_reset"):
-        #     self._attr_last_reset = None
-
-        # self._attr_extra_state_attributes = {
-        #     ATTR_ACCOUNT_NUMBER: self.uuid,
-        #     ATTR_UNIT_OF_MEASUREMENT: ENERGY_KILO_WATT_HOUR,
-        #     ATTR_RAW_DATA: None,
-        # }
+        self.billing_day = None
 
     def _login(self, client=False) -> None:
         self.opower_client.login(username=self.username, password=self.password)
@@ -121,11 +115,6 @@ class PGEUsageSensor(RestoreSensor, SensorEntity):
     def unique_id(self) -> str:
         """Return the unique ID of the sensor."""
         return f"{self.uuid}-{self._unique_id}"
-
-    @property
-    def state(self) -> str:
-        """Return the state of the sensor."""
-        return self._state
 
     @property
     def available(self) -> str:
@@ -151,35 +140,79 @@ class PGEUsageSensor(RestoreSensor, SensorEntity):
             }
         )
 
-        _LOGGER.debug(f"Setting Meter to {new_state}")
-        self._state = new_state
+        _LOGGER.debug("Setting Meter to %s", new_state)
+        self._attr_native_value = new_state
         self._available = True
 
-    def _reset_meter(self, new_reset: datetime, final_value: str) -> None:
-        # New readings won't be 0, in order to reset, first update after a new reading will be 0.  Future readings will increment adjust on a delay.
+    async def async_added_to_hass(self) -> None:
+        """Handle entity which will be added."""
+        if restored_data := await self.async_get_last_sensor_data():
+            self._attr_native_value = restored_data.native_value
+        await super().async_added_to_hass()
 
-        _LOGGER.debug(f"Evaluating Reset: ({new_reset}>{self.last_reset})")
-        # _LOGGER.debug(f"Evaluating Reset: ({new_reset}>{self._attr_last_reset})")
-        if self._state and final_value > self._state:
-            _LOGGER.debug(f"Maxing meter at {final_value})")
-            self._update_state_attr(final_value)
+    def _reset_meter(self, new_reset: datetime, meter: any) -> None:
+        """ New readings won't be 0, in order to reset, first update after a new reading will be 0.
+            Future readings will increment adjust on a delay.
+
+        Args:
+            new_reset (datetime): New time of "0" value
+            meter (UtilityCost | UtilityUsage): Contain the entire response
+        """
+        if hasattr(meter.reads[-2], "consumption"):
+            final_value = meter.reads[-2].consumption.value
         else:
-            _LOGGER.debug(f"Resetting meter to 0 ({final_value}<{self._state})")
-            # self._attr_last_reset = new_reset
-            self._update_state_attr(0)
+            final_value = meter.reads[-2].value
+
+        _LOGGER.debug("Evaluating Reset: (%s>%s)", new_reset, self.last_reset)
+        if self._attr_native_value and final_value > self._attr_native_value:
+            _LOGGER.debug("Maxing meter at %s", final_value)
+            self._update_state_attr(final_value, meter)
+        else:
+            _LOGGER.debug("Resetting meter to 0 (%s<%s)", final_value, self._attr_native_value)
+            self._update_state_attr(0, meter)
+            self._attr_last_reset = new_reset
+
+    # TODO: These two functions need reworked, I'm definitely overthinking it.
+
+    def _update_meter(self, query: callable, client=False) -> None:
+        try:
+            # Use the billing cycle date as our backstop (attributes show all usages for the current billing cycle)
+            start_date = date.today() - relativedelta(days=self.billing_day)
+            _LOGGER.debug("Query Period start_date=%s", start_date)
+
+            meter = query(self.uuid, start_date)
+            new_reset = datetime.strptime(
+                meter.reads[-1].end_time, "%Y-%m-%dT%H:%M:%S.%f%z"
+            )
+
+            if self.last_reset and new_reset > self.last_reset:
+                    self._reset_meter(new_reset, meter)
+            else:
+                if not self.last_reset and not self.state == 0:
+                    _LOGGER.debug("Resetting meter to 0 (last_reset is None)")
+                    self._update_state_attr(0, meter)
+                    self._attr_last_reset = new_reset
+                elif hasattr(meter.reads[-1], "consumption"):
+                    self._update_state_attr(meter.reads[-1].consumption.value, meter)
+                else:
+                    self._update_state_attr(meter.reads[-1].value, meter)
+        except Exception as exc:
+            _LOGGER.warning("Caught exception: %s", exc.args)
+            self._login(client=client)
+            self._available = False
 
 
 class DailyUsageSensor(PGEUsageSensor):
-    # _attr_last_reset: datetime
+    """Sensor to monitor daily usage"""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._name = f"PGE Reported Usage (daily)"
+        self._name = "PGE Reported Usage (daily)"
         self.billing_day = None
         self._unique_id = "daily"
 
     def get_billing_day(self) -> None:
-        # Lookup how far we are into the billing cycle
+        """ Lookup how far we are into the billing cycle """
         info = self.client.get_account_info()
         first_account_number = [
             group.default_account.account_number for group in info.groups
@@ -191,79 +224,31 @@ class DailyUsageSensor(PGEUsageSensor):
             first_account_detail.encrypted_account_number,
             first_account_detail.encrypted_person_id,
         )
-        self.billing_day = tracker.details.billing_cycle_day
-        _LOGGER.debug(f"Billing Day set to {self.billing_day}")
+        billing_day = tracker.details.billing_cycle_day
+        self.billing_day = billing_day if billing_day else 1
+        _LOGGER.debug("Billing Day set to %s", self.billing_day)
 
     def update(self) -> None:
+        """ Get latest data for the sensor """
         self._login(client=True)
 
-        try:
-            if not self.billing_day:
-                self.get_billing_day()
+        if not self.billing_day:
+            self.get_billing_day()
 
-            # Use the billing cycle date as our backstop (attributes show all usages for the current billing cycle)
-            start_date = date.today() - relativedelta(days=self.billing_day)
-            _LOGGER.debug(f"Billing Period start_date={start_date}")
-
-            meter = self.opower_client.utility_cost_daily(
-                self.uuid, start_date=start_date
-            )
-            new_reset = datetime.strptime(
-                meter.reads[-1].end_time, "%Y-%m-%dT%H:%M:%S.%f%z"
-            )
-
-            # if new_reset != self._attr_last_reset:
-            if self.last_reset and new_reset > self.last_reset:
-                final_value = (
-                    self.opower_client.utility_usage_daily(self.uuid)
-                    .reads[-1]
-                    .consumption.value
-                )
-                self._reset_meter(new_reset, final_value)
-            else:
-                self._update_state_attr(meter.reads[-1].value, meter)
-
-        except Exception as exc:
-            _LOGGER.warn(f"Caught exception: {exc.args}")
-            self._login(client=True)
-            self._available = False
-            # self.update()
+        self._update_meter(self.opower_client.utility_cost_daily)
 
 
 class HourlyUsageSensor(PGEUsageSensor):
-    # _attr_last_reset: datetime
+    """ Sensor to monitor hourly usage """
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._name = "PGE Reported Usage (hourly)"
         self._unique_id = "hourly"
+        self.billing_day = 2
 
     def update(self) -> None:
-        # TODO: Another sensor for cost rate
+        """ Get latest data for the sensor """
 
         self._login()
-
-        try:
-            # Use the billing cycle date as our backstop (attributes show all usages for the current billing cycle)
-            start_date = date.today() - relativedelta(days=2)
-            _LOGGER.debug(f"Billing Period start_date={start_date}")
-
-            meter = self.opower_client.utility_usage_hourly(
-                self.uuid, start_date=start_date
-            )
-
-            new_reset = datetime.strptime(
-                meter.reads[-1].end_time, "%Y-%m-%dT%H:%M:%S.%f%z"
-            )
-
-            # if new_reset != self._attr_last_reset:
-            if self.last_reset and new_reset != self.last_reset:
-                self._reset_meter(new_reset, meter.reads[-2].consumption.value)
-            else:
-                self._update_state_attr(meter.reads[-1].consumption.value, meter)
-
-        except Exception as exc:
-            _LOGGER.warn(f"Caught exception: {exc.args}")
-            self._login()
-            self._available = False
-            # self.update()
+        self._update_meter(self.opower_client.utility_usage_hourly)
