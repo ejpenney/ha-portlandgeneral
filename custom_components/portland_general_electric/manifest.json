@@ -6,6 +6,6 @@
   "domain": "portland_general_electric",
   "iot_class": "cloud_polling",
   "name": "HA Portland General Electric",
-  "requirements": ["portlandgeneral-api>=1.1.0", "pytz"],
+  "requirements": ["portlandgeneral-api>=1.1.0"],
   "version": "0.0.1"
 }

@@ -6,7 +6,6 @@ from typing import Callable, Optional
 from portlandgeneral import OPowerApi, PortlandGeneralApi
 import voluptuous as vol
 from dateutil.relativedelta import relativedelta
-import pytz
 
 from homeassistant.components.sensor import (
     PLATFORM_SCHEMA,
@@ -22,6 +21,7 @@ from homeassistant.const import (
     CURRENCY_DOLLAR,
 )
 import homeassistant.helpers.config_validation as cv
+from homeassistant.util import dt
 from homeassistant.helpers.typing import (
     ConfigType,
     DiscoveryInfoType,
@@ -160,10 +160,7 @@ class CostSensor(PGESensor):
     """Representation of Cost"""
 
     _attr_icon = "mdi:currency-usd"
-    _attr_native_unit_of_measurement = "%s/%s" % (
-        CURRENCY_DOLLAR,
-        ENERGY_KILO_WATT_HOUR,
-    )
+    _attr_native_unit_of_measurement = f"{CURRENCY_DOLLAR}/{ENERGY_KILO_WATT_HOUR}"
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -209,8 +206,6 @@ class PGEUsageSensor(PGESensor):
     _attr_native_unit_of_measurement = ENERGY_KILO_WATT_HOUR
 
     def _update_state_attr(self, new_state: str, utility_reading: dict, new_reset: datetime = None):
-        _LOGGER.debug("Setting meter to  %s", new_state)
-
         self._attr_extra_state_attributes.update(
             {
                 ATTR_ACCOUNT_NUMBER: self.uuid,
@@ -237,52 +232,53 @@ class PGEUsageSensor(PGESensor):
         Args:
             query (callable): Query we're running
         """
-        try:
-            # Use the billing cycle date as our backstop
-            start_date = date.today() - relativedelta(days=self.billing_day)
-            _LOGGER.debug("Query Period start_date=%s", start_date)
+        # try:
+        # Use the billing cycle date as our backstop
+        start_date = date.today() - relativedelta(days=self.billing_day)
+        _LOGGER.debug("Query Period start_date=%s", start_date)
 
-            meter = query(self.uuid, start_date)
+        meter = query(self.uuid, start_date)
 
-            curr_read_time = datetime.strptime(
-                meter.reads[-1].end_time, "%Y-%m-%dT%H:%M:%S.%f%z"
-            )
-            if hasattr(meter.reads[-1], "consumption"):
-                final_read = meter.reads[-2].consumption.value
-                this_read = meter.reads[-1].consumption.value
+        curr_read_time = datetime.strptime(
+            meter.reads[-1].end_time, "%Y-%m-%dT%H:%M:%S.%f%z"
+        )
+        if hasattr(meter.reads[-1], "consumption"):
+            final_read = meter.reads[-2].consumption.value
+            this_read = meter.reads[-1].consumption.value
+        else:
+            final_read = meter.reads[-2].value
+            this_read = meter.reads[-1].value
+        now = dt.now()
+
+        if curr_read_time > now:
+            # Reading is in the future - PGE resets before midnight sometimes.
+            # HASS gets confused if we reset before midnight.
+            # So this reading will be "delayed".
+            _LOGGER.debug("Postponing reset: (%s>%s)", curr_read_time, now.isoformat())
+            self._update_state_attr(final_read, meter)
+        elif self.last_reset and curr_read_time > self.last_reset:
+            # We have a new (valid) reading, proceed cautiously
+            _LOGGER.debug("Resetting: (%s>%s)", curr_read_time, self.last_reset)
+            if (self._attr_native_value and self._attr_native_value == final_read):
+                # Looks like we already stored the final value, time to reset
+                _LOGGER.debug("Resetting, final read was %s", final_read)
+                self._update_state_attr(0, meter, new_reset=curr_read_time)
             else:
-                final_read = meter.reads[-2].value
-                this_read = meter.reads[-1].value
-            now = datetime.utcnow().replace(tzinfo=pytz.UTC)
-
-            if curr_read_time > now:
-                # Reading is in the future - PGE resets before midnight sometimes.
-                # HASS gets confused if we reset before midnight.
-                # So this reading will be "delayed".
-                _LOGGER.debug("Postponing reset: (%s>%s)", curr_read_time, now)
+                # PGE is using an appropriate timezone!
+                # Store the final_value before resetting (happening next update)
+                _LOGGER.debug("Maxing meter prior to reset")
                 self._update_state_attr(final_read, meter)
-            elif self.last_reset and curr_read_time > self.last_reset:
-                # We have a new (valid) reading, proceed cautiously
-                _LOGGER.debug("Resetting: (%s>%s)", curr_read_time, self.last_reset)
-                if (self._attr_native_value and self._attr_native_value == final_read):
-                    # Looks like we already stored the final value, time to reset
-                    _LOGGER.debug("Resetting, final read was %s", final_read)
-                    self._update_state_attr(0, meter, new_reset=curr_read_time)
-                else:
-                    # PGE is using an appropriate timezone, store the final_value before resetting (next update)
-                    _LOGGER.debug("Maxing meter prior to reset")
-                    self._update_state_attr(final_read, meter)
-            else:
-                current_reset = None
-                if not self.last_reset:
-                    # Rebooting, first run... Either way, zero out our last_reset at midnight
-                    _LOGGER.debug("Last reset to midnight (last_reset is None and state is %s)", self.state)
-                    current_reset = datetime.combine(date.today(), datetime.min.time())
-                # We simply have an update, so store it!
-                self._update_state_attr(this_read, meter, new_reset=current_reset)
-        except Exception as exc:
-            _LOGGER.warning("Caught exception: %s", exc.args)
-            self._available = False
+        else:
+            current_reset = None
+            if not self.last_reset:
+                # Rebooting, first run... Either way, zero out our last_reset at midnight
+                _LOGGER.debug("Setting last_reset to midnight (last_reset is None")
+                current_reset = dt.start_of_local_day()
+            # We simply have an update, so store it!
+            self._update_state_attr(this_read, meter, new_reset=current_reset)
+        # except Exception as exc:
+        #     _LOGGER.warning("Caught exception: %s", exc.args)
+        #     self._available = False
 
 
 class DailyUsageSensor(PGEUsageSensor):
