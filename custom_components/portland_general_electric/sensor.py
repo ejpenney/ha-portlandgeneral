@@ -1,24 +1,23 @@
 """PGE sensor platform."""
 import logging
-from datetime import timedelta
+import json
+from datetime import timedelta, date, datetime
 from typing import Callable, Optional
 from portlandgeneral import OPowerApi, PortlandGeneralApi
 import voluptuous as vol
-import json
-from datetime import date, datetime
 from dateutil.relativedelta import relativedelta
+import pytz
 
 from homeassistant.components.sensor import (
     PLATFORM_SCHEMA,
     SensorDeviceClass,
     SensorStateClass,
     RestoreSensor,
-    ENTITY_ID_FORMAT,
+    # ENTITY_ID_FORMAT,
 )
 from homeassistant.const import (
     CONF_USERNAME,
     CONF_PASSWORD,
-    ATTR_UNIT_OF_MEASUREMENT,
     ENERGY_KILO_WATT_HOUR,
     CURRENCY_DOLLAR,
 )
@@ -61,11 +60,11 @@ async def async_setup_platform(
             password=config[CONF_PASSWORD],
             hass=hass,
         ),
-        HourlyUsageSensor(
-            username=config[CONF_USERNAME],
-            password=config[CONF_PASSWORD],
-            hass=hass,
-        ),
+        # HourlyUsageSensor(
+        #     username=config[CONF_USERNAME],
+        #     password=config[CONF_PASSWORD],
+        #     hass=hass,
+        # ),
         CostSensor(
             username=config[CONF_USERNAME],
             password=config[CONF_PASSWORD],
@@ -77,6 +76,7 @@ async def async_setup_platform(
 
 class PGESensor(RestoreSensor):
     """Representation of a PGE sensor."""
+
     billing_day = None
 
     def __init__(
@@ -116,6 +116,7 @@ class PGESensor(RestoreSensor):
         """Return the unique ID of the sensor."""
         return f"{self.uuid}-{self._unique_id}"
 
+    # TODO: Entity IDs are weird
     # @property
     # def entity_id(self) -> str:
     #     """Returns entity_id of the sensor"""
@@ -157,8 +158,12 @@ class PGESensor(RestoreSensor):
 
 class CostSensor(PGESensor):
     """Representation of Cost"""
+
     _attr_icon = "mdi:currency-usd"
-    _attr_native_unit_of_measurement = "%s/%s" % (CURRENCY_DOLLAR, ENERGY_KILO_WATT_HOUR)
+    _attr_native_unit_of_measurement = "%s/%s" % (
+        CURRENCY_DOLLAR,
+        ENERGY_KILO_WATT_HOUR,
+    )
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -197,12 +202,15 @@ class CostSensor(PGESensor):
 
 class PGEUsageSensor(PGESensor):
     """Representation of a PGE Usage Sensor"""
+
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL
     _attr_icon = "mdi:meter-electric"
     _attr_native_unit_of_measurement = ENERGY_KILO_WATT_HOUR
 
-    def _update_state_attr(self, new_state: str, utility_reading: dict):
+    def _update_state_attr(self, new_state: str, utility_reading: dict, new_reset: datetime = None):
+        _LOGGER.debug("Setting meter to  %s", new_state)
+
         self._attr_extra_state_attributes.update(
             {
                 ATTR_ACCOUNT_NUMBER: self.uuid,
@@ -218,55 +226,60 @@ class PGEUsageSensor(PGESensor):
         _LOGGER.debug("Setting Meter to %s", new_state)
         self._attr_native_value = new_state
         self._available = True
-
-    def _reset_meter(self, new_reset: datetime, meter: any) -> None:
-        """New readings won't be 0, in order to reset, first update after a new reading will be 0.
-            Future readings will increment adjust on a delay.
-
-        Args:
-            new_reset (datetime): New time of "0" value
-            meter (UtilityCost | UtilityUsage): Contain the entire response
-        """
-        if hasattr(meter.reads[-2], "consumption"):
-            final_value = meter.reads[-2].consumption.value
-        else:
-            final_value = meter.reads[-2].value
-
-        _LOGGER.debug("Evaluating Reset: (%s>%s)", new_reset, self.last_reset)
-        if self._attr_native_value and final_value > self._attr_native_value:
-            _LOGGER.debug("Maxing meter at %s", final_value)
-            self._update_state_attr(final_value, meter)
-        else:
-            _LOGGER.debug(
-                "Resetting meter to 0 (%s<%s)", final_value, self._attr_native_value
-            )
-            self._update_state_attr(0, meter)
+        if new_reset:
+            _LOGGER.debug("Updating last_reset to %s", new_reset.isoformat())
             self._attr_last_reset = new_reset
 
-    # TODO: These two functions need reworked, I'm definitely overthinking it.
-
+    # TODO: This needs reworked, I'm definitely overthinking it.
     def _update_meter(self, query: callable) -> None:
+        """Runs the update, determines what an appropriate value is
+
+        Args:
+            query (callable): Query we're running
+        """
         try:
-            # Use the billing cycle date as our backstop (attributes show all usages for the current billing cycle)
+            # Use the billing cycle date as our backstop
             start_date = date.today() - relativedelta(days=self.billing_day)
             _LOGGER.debug("Query Period start_date=%s", start_date)
 
             meter = query(self.uuid, start_date)
-            new_reset = datetime.strptime(
+
+            curr_read_time = datetime.strptime(
                 meter.reads[-1].end_time, "%Y-%m-%dT%H:%M:%S.%f%z"
             )
-
-            if self.last_reset and new_reset > self.last_reset:
-                self._reset_meter(new_reset, meter)
+            if hasattr(meter.reads[-1], "consumption"):
+                final_read = meter.reads[-2].consumption.value
+                this_read = meter.reads[-1].consumption.value
             else:
-                if not self.last_reset and not self.state == 0:
-                    _LOGGER.debug("Resetting meter to 0 (last_reset is None)")
-                    self._update_state_attr(0, meter)
-                    self._attr_last_reset = new_reset
-                elif hasattr(meter.reads[-1], "consumption"):
-                    self._update_state_attr(meter.reads[-1].consumption.value, meter)
+                final_read = meter.reads[-2].value
+                this_read = meter.reads[-1].value
+            now = datetime.utcnow().replace(tzinfo=pytz.UTC)
+
+            if curr_read_time > now:
+                # Reading is in the future - PGE resets before midnight sometimes.
+                # HASS gets confused if we reset before midnight.
+                # So this reading will be "delayed".
+                _LOGGER.debug("Postponing reset: (%s>%s)", curr_read_time, now)
+                self._update_state_attr(final_read, meter)
+            elif self.last_reset and curr_read_time > self.last_reset:
+                # We have a new (valid) reading, proceed cautiously
+                _LOGGER.debug("Resetting: (%s>%s)", curr_read_time, self.last_reset)
+                if (self._attr_native_value and self._attr_native_value == final_read):
+                    # Looks like we already stored the final value, time to reset
+                    _LOGGER.debug("Resetting, final read was %s", final_read)
+                    self._update_state_attr(0, meter, new_reset=curr_read_time)
                 else:
-                    self._update_state_attr(meter.reads[-1].value, meter)
+                    # PGE is using an appropriate timezone, store the final_value before resetting (next update)
+                    _LOGGER.debug("Maxing meter prior to reset")
+                    self._update_state_attr(final_read, meter)
+            else:
+                current_reset = None
+                if not self.last_reset:
+                    # Rebooting, first run... Either way, zero out our last_reset at midnight
+                    _LOGGER.debug("Last reset to midnight (last_reset is None and state is %s)", self.state)
+                    current_reset = datetime.combine(date.today(), datetime.min.time())
+                # We simply have an update, so store it!
+                self._update_state_attr(this_read, meter, new_reset=current_reset)
         except Exception as exc:
             _LOGGER.warning("Caught exception: %s", exc.args)
             self._available = False

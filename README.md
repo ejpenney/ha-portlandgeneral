@@ -9,7 +9,7 @@
 
 ## Installation
 
-### HACS - (CURRENTLY UNTESTED)
+### HACS - (RECOMMENDED)
 
 0. Have [HACS](https://github.com/custom-components/hacs) installed, this will allow you to easily update
 1. Add `https://github.com/ejpenney/ha-portland-general` as a [custom repository](https://custom-components.github.io/hacs/usage/settings/#add-custom-repositories) as Type: Integration
@@ -53,7 +53,11 @@ It does not appear PGE updates this data until 24-48 hours after the fact, so it
 
 ### Daily Sensor
 
-PGE's daily sensor suffers from similar issues, the number doesn't finalize until around midnight therefore we cannot get "today's" usage.  Instead we're using the `utility_cost_daily()` call, this data is mostly accurate.  It appears to be updated 2-3 times per day.  This has the added bonus of reporting "Provided Cost" (TODO: This should be added to a sensor).
+PGE's daily sensor suffers from similar issues, the number doesn't finalize until around midnight therefore we cannot get "today's" usage.  Instead we're using the `utility_cost_daily()` call, this data is mostly accurate.  It appears to be updated 2-3 times per day.  This has the added bonus of reporting "Provided Cost".
+
+### Cost Sensor
+
+Assumes PGE tiers up to 1,000 KWH at one price and the second price for beyond.  This is typically true.  Contains an attribute with a calculated total consumption this billing period.  Not 100% accurate but should be close.
 
 ### WIP Disclaimer
 
