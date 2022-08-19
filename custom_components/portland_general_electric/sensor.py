@@ -158,7 +158,7 @@ class PGESensor(RestoreSensor):
 class CostSensor(PGESensor):
     """Representation of Cost"""
     _attr_icon = "mdi:currency-usd"
-    _attr_native_unit_of_measurement = CURRENCY_DOLLAR
+    _attr_native_unit_of_measurement = "%s/%s" % (CURRENCY_DOLLAR, ENERGY_KILO_WATT_HOUR)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
