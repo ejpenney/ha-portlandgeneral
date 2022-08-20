@@ -239,8 +239,17 @@ class PGEUsageSensor(PGESensor):
 
         meter = query(self.uuid, start_date)
 
-        curr_read_time = datetime.strptime(
-            meter.reads[-1].end_time, "%Y-%m-%dT%H:%M:%S.%f%z"
+        # "Flatten" read time.
+        curr_read_time = datetime.combine(
+            (
+                datetime.strptime(meter.reads[-1].end_time, "%Y-%m-%dT%H:%M:%S.%f%z")
+                # PGE either lies about the read times or is perpetually 20 hours behind
+                # Based on my observations: (consumption spikes during heat waves)
+                # I believe PGE is lying about the read times.
+                + relativedelta(days=1)
+            ),
+            # PGE read times run 17:00-17:00, but we reset at midnight
+            datetime.min.time()
         )
         if hasattr(meter.reads[-1], "consumption"):
             final_read = meter.reads[-2].consumption.value
