@@ -234,7 +234,7 @@ class PGEUsageSensor(PGESensor):
         """
         # try:
         # Use the billing cycle date as our backstop
-        start_date = date.today() - relativedelta(days=self.billing_day)
+        start_date = date.today() - relativedelta(days=31)
         _LOGGER.debug("Query Period start_date=%s", start_date)
 
         meter = query(self.uuid, start_date)
