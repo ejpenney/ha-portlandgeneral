@@ -166,7 +166,7 @@ class CostSensor(PGESensor):
         if not self.billing_day:
             self.get_billing_day()
 
-        start_date = date.today() - relativedelta(days=self.billing_day)
+        start_date = date.today() - relativedelta(days=31)
         LOGGER.debug("Query Period start_date=%s", start_date)
 
         try:
@@ -186,7 +186,7 @@ class CostSensor(PGESensor):
             )
         except Exception as exc:
             LOGGER.warning("Caught exception: %s", exc.args)
-            self._state = None
+            self.state = None
             return False
         return True
 
@@ -232,7 +232,13 @@ class PGEUsageSensor(PGESensor):
         LOGGER.debug("Query Period start_date=%s", start_date)
 
         meter = query(self.uuid, start_date)
-
+        # for _ in range(5):
+        #   try:
+        #     meter = query(self.uuid, start_date)
+        #     break
+        #   except Exception as exc:
+        #     LOGGER.debug("Caught exception querying, attempting to refresh login...")
+        #     self._login()
         # "Flatten" read time.
         # PGE read times run 17:00-17:00, but we reset at midnight
         curr_read_time = dt.start_of_local_day(
@@ -317,7 +323,7 @@ class HourlyUsageSensor(PGEUsageSensor):
         """Get latest data for the sensor"""
 
         try:
-            self._login()
+            # self._login()
             self._update_meter(self.opower_client.utility_usage_hourly)
         except Exception:
             self.state = None
