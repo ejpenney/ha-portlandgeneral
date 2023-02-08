@@ -23,17 +23,12 @@ Copy `custom_components/portland_general_electric` into your Home Assistant `con
 ### Post installation steps
 
 - Restart HA
-- Add the following entry to `configuration.yaml`:
-
-```yaml
-sensor:
-  - platform: portland_general_electric
-    username: !secret pge_email
-    password: !secret pge_password
-```
-
-- Assuming you have set `pge_email` and `pge_password` in `secrets.yaml`
-- Restart HA a final time
+- Browse to your Home Assistant instance
+- In the sidebar click on  Settings.
+- From the configuration menu select: Devices & Services.
+- In the bottom right, click on the  Add Integration button.
+- From the list, search and select “HA Portland General Electric”.
+- Follow the instruction on screen to complete the set up.
 
 ## What is this?
 
