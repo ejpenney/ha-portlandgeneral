@@ -1,0 +1,4 @@
+pytest
+pytest-cov==3.0.0
+pytest-homeassistant-custom-component==0.13.23
+portlandgeneral-api
