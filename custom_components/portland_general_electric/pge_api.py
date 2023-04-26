@@ -85,7 +85,6 @@ class PGESensor(RestoreSensor):
         self._attr_extra_state_attributes = {}
 
         self.opower_client = OPowerApi(verbose=verbose)
-        self.client = PortlandGeneralApi(verbose=verbose)
         self._hass = hass
         self.username = username
         self.password = password
@@ -95,11 +94,8 @@ class PGESensor(RestoreSensor):
         self._name = None
         self._unique_id = None
 
-    def _login(self, client=False) -> None:
+    def _login(self) -> None:
         self.opower_client.login(username=self.username, password=self.password)
-
-        if client:
-            self.client.login(username=self.username, password=self.password)
 
         if not self.uuid or not self.opower_uuid:
             current_customers = self.opower_client.current_customers()
@@ -150,23 +146,6 @@ class PGESensor(RestoreSensor):
             self.billing_day = billing_day
             LOGGER.debug("Billing Day set to %s", self.billing_day)
 
-    def get_billing_day_old(self) -> None:
-        """Lookup how far we are into the billing cycle"""
-        info = self.client.get_account_info()
-        first_account_number = [
-            group.default_account.account_number for group in info.groups
-        ][0]
-        first_account_detail = self.client.get_account_details(
-            first_account_number, info.encrypted_person_id
-        )[0]
-        tracker = self.client.get_energy_tracker_info(
-            first_account_detail.encrypted_account_number,
-            first_account_detail.encrypted_person_id,
-        )
-        billing_day = tracker.details.billing_cycle_day
-        self.billing_day = billing_day if billing_day else 1
-        LOGGER.debug("Billing Day set to %s", self.billing_day)
-
 
 class CostSensor(PGESensor):
     """Representation of Cost"""
@@ -181,7 +160,7 @@ class CostSensor(PGESensor):
 
     def update(self):
         """Get latest data for the sensor"""
-        self._login(client=True)
+        self._login()
 
         if not self.billing_day:
             self.get_billing_day()
@@ -318,7 +297,7 @@ class DailyUsageSensor(PGEUsageSensor):
     def update(self) -> None:
         """Get latest data for the sensor"""
         try:
-            self._login(client=True)
+            self._login()
 
             if not self.billing_day:
                 self.get_billing_day()
