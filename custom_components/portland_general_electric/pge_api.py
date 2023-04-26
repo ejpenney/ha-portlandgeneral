@@ -2,7 +2,7 @@
 
 import logging
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from dateutil.relativedelta import relativedelta
 
 from homeassistant.core import HomeAssistant
@@ -90,6 +90,7 @@ class PGESensor(RestoreSensor):
         self.username = username
         self.password = password
         self.uuid = None
+        self.opower_uuid = None
         self._available = True
         self._name = None
         self._unique_id = None
@@ -100,8 +101,11 @@ class PGESensor(RestoreSensor):
         if client:
             self.client.login(username=self.username, password=self.password)
 
-        if not self.uuid:
-            self.uuid = self.opower_client.current_customers().utility_accounts[0].uuid
+        if not self.uuid or not self.opower_uuid:
+            current_customers = self.opower_client.current_customers()
+
+            self.opower_uuid = current_customers.uuid
+            self.uuid = current_customers.utility_accounts[0].uuid
 
     @property
     def unique_id(self) -> str:
@@ -131,6 +135,22 @@ class PGESensor(RestoreSensor):
         await super().async_added_to_hass()
 
     def get_billing_day(self) -> None:
+        """Lookup how far we are into the billing cycle"""
+        present = datetime.now()
+        billing_day = 1
+
+        for bill in self.opower_client.utility_billing_windows(self.opower_uuid).bills:
+            start_date = datetime.strptime(bill.start_date, '%Y-%m-%dT%H:%M:%S.%fZ')
+            end_date = datetime.strptime(bill.end_date, '%Y-%m-%dT%H:%M:%S.%fZ')
+
+            if start_date < present < end_date + timedelta(days=1):
+              billing_day = (present - start_date).days
+              break
+
+            self.billing_day = billing_day
+            LOGGER.debug("Billing Day set to %s", self.billing_day)
+
+    def get_billing_day_old(self) -> None:
         """Lookup how far we are into the billing cycle"""
         info = self.client.get_account_info()
         first_account_number = [
