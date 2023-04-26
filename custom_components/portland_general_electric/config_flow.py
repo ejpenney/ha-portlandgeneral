@@ -3,16 +3,13 @@ from __future__ import annotations
 
 from typing import Any
 
-import voluptuous as vol
-
 from homeassistant.config_entries import ConfigFlow
 from homeassistant.const import CONF_NAME, CONF_PASSWORD, CONF_USERNAME
-from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
+import voluptuous as vol
 
 from .const import DOMAIN
 from .pge_api import validate_auth
-
 
 DATA_SCHEMA = vol.Schema(
     {
@@ -38,9 +35,7 @@ class PGEFlowHandler(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            self._async_abort_entries_match(
-                {CONF_USERNAME: user_input[CONF_USERNAME]}
-            )
+            self._async_abort_entries_match({CONF_USERNAME: user_input[CONF_USERNAME]})
 
             if await self.hass.async_add_executor_job(
                 validate_auth,

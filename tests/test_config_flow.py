@@ -2,16 +2,18 @@
 
 from unittest.mock import AsyncMock, patch
 
-import pytest
-
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+import pytest
 
 from custom_components.portland_general_electric.const import DOMAIN
+
 from . import USER_INPUT
 
-VALIDATE_AUTH_PATCH = "custom_components.portland_general_electric.config_flow.validate_auth"
+VALIDATE_AUTH_PATCH = (
+    "custom_components.portland_general_electric.config_flow.validate_auth"
+)
 
 pytestmark = pytest.mark.usefixtures("mock_setup_entry")
 

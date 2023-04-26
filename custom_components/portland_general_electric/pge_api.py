@@ -1,36 +1,67 @@
 """Interacts directly with portlandgeneral-api"""
 
-import logging
+from datetime import date, datetime
 import json
-from datetime import date, datetime, timedelta
+import logging
+
 from dateutil.relativedelta import relativedelta
-
-from homeassistant.core import HomeAssistant
 from homeassistant.components.sensor import (
-    SensorDeviceClass,
-    SensorStateClass,
     RestoreSensor,
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
 )
-from homeassistant.const import ENERGY_KILO_WATT_HOUR, CURRENCY_DOLLAR
-from homeassistant.util import dt
+from homeassistant.const import CURRENCY_DOLLAR, ENERGY_KILO_WATT_HOUR
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import HomeAssistantType
+from homeassistant.util import dt
+from portlandgeneral import OPowerApi
 
-from portlandgeneral import OPowerApi, PortlandGeneralApi
+from .const import ATTR_ACCOUNT_NUMBER, ATTR_RAW_DATA, ATTR_TOTAL_USAGE, LOGGER
 
-from .const import LOGGER, ATTR_TOTAL_USAGE, ATTR_ACCOUNT_NUMBER, ATTR_RAW_DATA
 
-def validate_auth(username: str, password:str) -> bool:
+def validate_auth(username: str, password: str) -> bool:
     """Validate PGE credentials"""
     opower_client = OPowerApi()
     try:
         opower_client.login(username=username, password=password)
-    except Exception:
+    except Exception:  # pylint: disable=broad-exception-caught
         return False
-    
+
     return True
 
 
-class PGEConnection:
+class PGEAuth:
+    """Contains PGE authentication and user account details."""
+
+    def __init__(self, username: str, password: str):
+        log_level = logging.getLevelName(LOGGER.getEffectiveLevel())
+        verbose = log_level == "DEBUG"
+        LOGGER.debug("log_level=%s and verbose=%s", log_level, verbose)
+
+        self.username = username
+        self.password = password
+        self.uuid = None
+        self.opower_uuid = None
+        self.opower_client = OPowerApi(verbose=verbose)
+
+        # self._login()
+
+    def login(self) -> None:
+        """Trigger a login (refresh)."""
+        self.opower_client.login(username=self.username, password=self.password)
+        if not self.uuid or not self.opower_uuid:
+            self.update_uuids()
+
+    def update_uuids(self) -> None:
+        """Retrieve UUIDs from the PGE APIs."""
+        current_customers = self.opower_client.current_customers()
+
+        self.opower_uuid = current_customers.uuid
+        self.uuid = current_customers.utility_accounts[0].uuid
+
+
+class PGEConnection(SensorEntity):
     """Contains a list of PGE Sensors."""
 
     def __init__(
@@ -66,6 +97,7 @@ class PGEConnection:
         ]
         return True
 
+
 class PGESensor(RestoreSensor):
     """Representation of a PGE sensor."""
 
@@ -78,45 +110,20 @@ class PGESensor(RestoreSensor):
         password: str,
     ):
         super().__init__()
-
-        log_level = logging.getLevelName(LOGGER.getEffectiveLevel())
-        verbose = log_level == "DEBUG"
-        LOGGER.debug("log_level=%s and verbose=%s", log_level, verbose)
         self._attr_extra_state_attributes = {}
-
-        self.opower_client = OPowerApi(verbose=verbose)
+        self.pge_api = PGEAuth(username, password)
         self._hass = hass
-        self.username = username
-        self.password = password
-        self.uuid = None
-        self.opower_uuid = None
         self._available = True
         self._name = None
-        self._unique_id = None
-
-    def _login(self) -> None:
-        self.opower_client.login(username=self.username, password=self.password)
-
-        if not self.uuid or not self.opower_uuid:
-            current_customers = self.opower_client.current_customers()
-
-            self.opower_uuid = current_customers.uuid
-            self.uuid = current_customers.utility_accounts[0].uuid
 
     @property
     def unique_id(self) -> str:
         """Return the unique ID of the sensor."""
-        return f"{self.uuid}-{self._unique_id}"
-
-    # TODO: Entity IDs are weird
-    # @property
-    # def entity_id(self) -> str:
-    #     """Returns entity_id of the sensor"""
-    #     return ENTITY_ID_FORMAT.format(f"pge_reported_{self.unique_id}")
+        return f"{self.pge_api.uuid}-{self._name.replace(' ', '_')}"
 
     @property
-    def available(self) -> str:
-        """Return the availability of the sensor."""
+    def available(self):
+        """Return if sensor is available."""
         return self._available
 
     @property
@@ -135,13 +142,15 @@ class PGESensor(RestoreSensor):
         present = datetime.now()
         billing_day = 1
 
-        for bill in self.opower_client.utility_billing_windows(self.opower_uuid).bills:
-            start_date = datetime.strptime(bill.start_date, '%Y-%m-%dT%H:%M:%S.%fZ')
-            end_date = datetime.strptime(bill.end_date, '%Y-%m-%dT%H:%M:%S.%fZ')
+        for bill in self.pge_api.opower_client.utility_billing_windows(
+            self.pge_api.opower_uuid
+        ).bills:
+            start_date = datetime.strptime(bill.start_date, "%Y-%m-%dT%H:%M:%S.%fZ")
+            end_date = datetime.strptime(bill.end_date, "%Y-%m-%dT%H:%M:%S.%fZ")
 
-            if start_date < present < end_date + timedelta(days=1):
-              billing_day = (present - start_date).days
-              break
+            if start_date < present < end_date + relativedelta(days=1):
+                billing_day = (present - start_date).days
+                break
 
             self.billing_day = billing_day
             LOGGER.debug("Billing Day set to %s", self.billing_day)
@@ -155,12 +164,11 @@ class CostSensor(PGESensor):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._name = "PGE Reported Cost"
-        self._unique_id = "cost"
+        self._name = "PGE reported cost"
 
     def update(self):
         """Get latest data for the sensor"""
-        self._login()
+        self.pge_api.login()
 
         if not self.billing_day:
             self.get_billing_day()
@@ -169,7 +177,9 @@ class CostSensor(PGESensor):
         LOGGER.debug("Query Period start_date=%s", start_date)
 
         try:
-            meter = self.opower_client.utility_cost_daily(self.uuid, start_date)
+            meter = self.pge_api.opower_client.utility_cost_daily(
+                self.pge_api.uuid, start_date
+            )
             total_usage = 0
             for read in meter.reads:
                 total_usage += read.value
@@ -183,7 +193,7 @@ class CostSensor(PGESensor):
                     ATTR_TOTAL_USAGE: str(total_usage),
                 }
             )
-        except Exception as exc:
+        except Exception as exc:  # pylint: disable=broad-exception-caught
             LOGGER.warning("Caught exception: %s", exc.args)
             self.state = None
             return False
@@ -198,10 +208,12 @@ class PGEUsageSensor(PGESensor):
     _attr_icon = "mdi:meter-electric"
     _attr_native_unit_of_measurement = ENERGY_KILO_WATT_HOUR
 
-    def _update_state_attr(self, new_state: str, utility_reading: dict, new_reset: datetime = None):
+    def _update_state_attr(
+        self, new_state: str, utility_reading: dict, new_reset: datetime = None
+    ):
         self._attr_extra_state_attributes.update(
             {
-                ATTR_ACCOUNT_NUMBER: self.uuid,
+                ATTR_ACCOUNT_NUMBER: self.pge_api.uuid,
                 ATTR_RAW_DATA: json.loads(
                     json.dumps(
                         utility_reading,
@@ -218,7 +230,7 @@ class PGEUsageSensor(PGESensor):
             LOGGER.debug("Updating last_reset to %s", new_reset.isoformat())
             self._attr_last_reset = new_reset
 
-    # TODO: This needs reworked, I'm definitely overthinking it.
+    # TODO: This needs reworked, I'm definitely overthinking it.  # pylint: disable=fixme
     def _update_meter(self, query: callable) -> None:
         """Runs the update, determines what an appropriate value is
 
@@ -230,22 +242,15 @@ class PGEUsageSensor(PGESensor):
         start_date = date.today() - relativedelta(days=31)
         LOGGER.debug("Query Period start_date=%s", start_date)
 
-        meter = query(self.uuid, start_date)
-        # for _ in range(5):
-        #   try:
-        #     meter = query(self.uuid, start_date)
-        #     break
-        #   except Exception as exc:
-        #     LOGGER.debug("Caught exception querying, attempting to refresh login...")
-        #     self._login()
-        # "Flatten" read time.
-        # PGE read times run 17:00-17:00, but we reset at midnight
+        meter = query(self.pge_api.uuid, start_date)
         curr_read_time = dt.start_of_local_day(
-            (datetime.strptime(meter.reads[-1].end_time, "%Y-%m-%dT%H:%M:%S.%f%z")
-            # PGE either lies about the read times or is perpetually 20 hours behind
-            # Based on my observations: (consumption spikes during heat waves)
-            # I believe PGE is lying about the read times.
-            + relativedelta(days=1))
+            (
+                datetime.strptime(meter.reads[-1].end_time, "%Y-%m-%dT%H:%M:%S.%f%z")
+                # PGE either lies about the read times or is perpetually 20 hours behind
+                # Based on my observations: (consumption spikes during heat waves)
+                # I believe PGE is lying about the read times.
+                + relativedelta(days=1)
+            )
         )
         if hasattr(meter.reads[-1], "consumption"):
             final_read = meter.reads[-2].consumption.value
@@ -264,7 +269,7 @@ class PGEUsageSensor(PGESensor):
         elif self.last_reset and curr_read_time > self.last_reset:
             # We have a new (valid) reading, proceed cautiously
             LOGGER.debug("Resetting: (%s>%s)", curr_read_time, self.last_reset)
-            if (self._attr_native_value and self._attr_native_value == final_read):
+            if self._attr_native_value and self._attr_native_value == final_read:
                 # Looks like we already stored the final value, time to reset
                 LOGGER.debug("Resetting, final read was %s", final_read)
                 self._update_state_attr(0, meter, new_reset=curr_read_time)
@@ -281,9 +286,6 @@ class PGEUsageSensor(PGESensor):
                 current_reset = dt.start_of_local_day()
             # We simply have an update, so store it!
             self._update_state_attr(this_read, meter, new_reset=current_reset)
-        # except Exception as exc:
-        #     LOGGER.warning("Caught exception: %s", exc.args)
-        #     self._available = False
 
 
 class DailyUsageSensor(PGEUsageSensor):
@@ -291,19 +293,18 @@ class DailyUsageSensor(PGEUsageSensor):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._name = "PGE Reported Usage (daily)"
-        self._unique_id = "daily"
+        self._name = "PGE reported daily usage"
 
     def update(self) -> None:
         """Get latest data for the sensor"""
         try:
-            self._login()
+            self.pge_api.login()
 
             if not self.billing_day:
                 self.get_billing_day()
 
-            self._update_meter(self.opower_client.utility_cost_daily)
-        except Exception:
+            self._update_meter(self.pge_api.opower_client.utility_cost_daily)
+        except Exception:  # pylint: disable=broad-exception-caught
             self.state = None
             return False
         return True
@@ -314,17 +315,15 @@ class HourlyUsageSensor(PGEUsageSensor):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._name = "PGE Reported Usage (hourly)"
-        self._unique_id = "hourly"
+        self._name = "PGE reported hourly usage"
         self.billing_day = 2
 
     def update(self) -> None:
         """Get latest data for the sensor"""
 
         try:
-            # self._login()
-            self._update_meter(self.opower_client.utility_usage_hourly)
-        except Exception:
+            self._update_meter(self.pge_api.opower_client.utility_usage_hourly)
+        except Exception:  # pylint: disable=broad-exception-caught
             self.state = None
             return False
         return True
