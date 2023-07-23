@@ -13,7 +13,7 @@
 ### HACS - (RECOMMENDED)
 
 0. Have [HACS](https://github.com/custom-components/hacs) installed, this will allow you to easily update
-1. Add `https://github.com/ejpenney/ha-portland-general` as a [custom repository](https://custom-components.github.io/hacs/usage/settings/#add-custom-repositories) as Type: Integration
+1. Add `https://github.com/ejpenney/ha-portlandgeneral` as a [custom repository](https://custom-components.github.io/hacs/usage/settings/#add-custom-repositories) as Type: Integration
 2. Click install under "HA Portland General Electric"
 3. Restart Home Assistant.
 
