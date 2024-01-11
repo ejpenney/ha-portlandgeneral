@@ -1,4 +1,4 @@
-# DEPRECATED: Use Home Assistant's built-in (OPower Integration)[https://www.home-assistant.io/integrations/opower/], it now supports Portland General Electric, and their implementation is rock-solid.
+# DEPRECATED: Use Home Assistant's built-in [OPower Integration](https://www.home-assistant.io/integrations/opower/), it now supports Portland General Electric, and their implementation is rock-solid.
 
 <!-- [![hacs_badge](https://img.shields.io/badge/HACS-Default-orange.svg)](https://github.com/custom-components/hacs) -->
 
